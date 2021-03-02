@@ -1,0 +1,1 @@
+# midasgold-protocol
