@@ -16,11 +16,15 @@ import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
 
 import "./MidasGoldToken.sol";
+import "./interfaces/ILiquidityMigrator.sol";
 import "./interfaces/IMdgLocker.sol";
 
 contract MdgRewardPool {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
+
+    uint256 public constant BLOCKS_PER_DAY = 28800; // 86400 / 3;
+    uint256 public constant BLOCKS_PER_WEEK = 201600; // 28800 * 7;
 
     // governance
     address public operator = address(0xD025628eEe504330f1282C96B28a731E3995ff66);
@@ -68,9 +72,8 @@ contract MdgRewardPool {
 
     uint256 public nextHalvingBlock;
 
-    uint256 public constant BLOCKS_PER_DAY = 28800; // 86400 / 3;
-
-    uint256 public constant BLOCKS_PER_WEEK = 201600; // 28800 * 7;
+    // The liquidity migrator contract. It has a lot of power. Can only be set through governance (owner).
+    ILiquidityMigrator public migrator;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -107,6 +110,28 @@ contract MdgRewardPool {
             nextHalvingBlock = nextHalvingBlock.add(BLOCKS_PER_WEEK);
         }
         _;
+    }
+
+    function setReserveFund(address _reserveFund) external onlyOperator {
+        reserveFund = _reserveFund;
+    }
+
+    // Set the migrator contract. Can only be called by the owner.
+    function setMigrator(ILiquidityMigrator _migrator) public onlyOperator {
+        migrator = _migrator;
+    }
+
+    // Migrate lp token to another lp contract.
+    function migrate(uint256 _pid) public onlyOperator {
+        require(block.number >= startBlock + BLOCKS_PER_WEEK * 4, "DON'T migrate too soon sir!");
+        require(address(migrator) != address(0), "migrate: no migrator");
+        PoolInfo storage pool = poolInfo[_pid];
+        IERC20 lpToken = pool.lpToken;
+        uint256 bal = lpToken.balanceOf(address(this));
+        lpToken.safeApprove(address(migrator), bal);
+        IERC20 newLpToken = migrator.migrate(lpToken);
+        require(bal == newLpToken.balanceOf(address(this)), "migrate: bad");
+        pool.lpToken = newLpToken;
     }
 
     function checkPoolDuplicate(IERC20 _lpToken) internal view {
@@ -295,6 +320,9 @@ contract MdgRewardPool {
             uint256 _mintAmount = (_totalSupply.add(_amount) <= _cap) ? _amount : _cap.sub(_totalSupply);
             if (_mintAmount > 0) {
                 uint256 _burnAmount = (burnPercent == 0) ? 0 : _mintAmount.mul(burnPercent).div(10000);
+                if (_totalSupply.add(_mintAmount).add(_burnAmount) > _cap) {
+                    _burnAmount = _cap.sub(_totalSupply).sub(_mintAmount);
+                }
                 MidasGoldToken(mdg).mint(address(this), _mintAmount.add(_burnAmount));
                 uint256 _transferAmount = _mintAmount;
                 if (block.number < lockUntilBlock) {
