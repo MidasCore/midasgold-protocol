@@ -87,7 +87,7 @@ describe('MdgLocker.test', () => {
             await mineBlocks(ethers, 9);
             const currentBlk = await getLatestBlockNumber(ethers);
             const canUnlockAmount = (currentBlk <= 11) ? toWei(0) : (currentBlk >= 21) ? toWei(10) : toWei(currentBlk - 11);
-            console.log('currentBlk = %s, canUnlockAmount = %s MDG', currentBlk, fromWei(canUnlockAmount));
+            // console.log('currentBlk = %s, canUnlockAmount = %s MDG', currentBlk, fromWei(canUnlockAmount));
             expect(String(await locker.canUnlockAmount(carol.address))).to.eq(canUnlockAmount);
             await expect(async () => {
                 await locker.connect(carol).unlock();

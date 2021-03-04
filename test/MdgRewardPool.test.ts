@@ -97,8 +97,8 @@ describe('MdgRewardPool.test', () => {
     describe('#initialize', () => {
         it('should works correctly', async () => {
             expect(String(await pool.mdg())).to.eq(mdg.address);
-            expect(String(await pool.startBlock())).to.eq('15');
-            expect(String(await pool.lockUntilBlock())).to.eq('115');
+            expect(String(await pool.startBlock())).to.eq(startBlock);
+            expect(String(await pool.lockUntilBlock())).to.eq(startBlock.add(100));
             expect(String(await pool.rewardPerBlock())).to.eq(toWei('0.2'));
             expect(String(await pool.mdoPerBlock())).to.eq(toWei('0.01'));
             expect(String(await pool.bcashPerBlock())).to.eq(toWei('0.01'));
@@ -132,8 +132,7 @@ describe('MdgRewardPool.test', () => {
             await mineBlocks(ethers, 20);
             await pool.connect(bob).deposit(0, toWei('10'));
             expect(String(await pool.totalAllocPoint())).to.eq('26000'); // 20x pool has started
-            const currentBlk = await getLatestBlockNumber(ethers);
-            console.log('currentBlk = %s', currentBlk);
+            // console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
             await mineBlocks(ethers, 1);
             expect(String(await pool.pendingReward(0, bob.address))).to.eq(toWei('0.15384615384615384'));
             expect(String(await pool.pendingMdo(0, bob.address))).to.eq(toWei('0.00769230769230768'));
@@ -173,12 +172,12 @@ describe('MdgRewardPool.test', () => {
             expect(String(await locker.lockOf(bob.address))).to.eq(fullLockedAmount);
             expect(String(await locker.released(bob.address))).to.eq(toWei('0'));
             expect(String(await locker.canUnlockAmount(bob.address))).to.eq(toWei('0'));
-            console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
+            // console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
             await mineBlocks(ethers, 100);
-            console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
+            // console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
             expect(String(await locker.canUnlockAmount(bob.address))).to.eq(toWei('0.590192307692307687'));
             await mineBlocks(ethers, 100);
-            console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
+            // console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
             expect(String(await locker.canUnlockAmount(bob.address))).to.eq(fullLockedAmount);
             expect(String(await locker.released(bob.address))).to.eq(toWei('0'));
             await expect(async () => {
