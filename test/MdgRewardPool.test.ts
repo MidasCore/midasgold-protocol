@@ -71,11 +71,11 @@ describe('MdgRewardPool.test', () => {
         lpFee = await MockERC20.connect(operator).deploy('lpFee', 'lpFee', 18);
 
         startBlock = BigNumber.from(await latestBlocknumber(provider)).add(10);
-        locker = await MdgLocker.connect(operator).deploy(mdg.address, startBlock.add(10), startBlock.add(110));
+        locker = await MdgLocker.connect(operator).deploy(mdg.address, startBlock.add(100), startBlock.add(200));
 
         pool = await MdgRewardPool.connect(operator).deploy();
         rewardPerBlock = toWei('0.2');
-        await pool.connect(operator).initialize(mdg.address, mdo.address, bcash.address, rewardPerBlock, startBlock, startBlock.add(10), locker.address, reserveFund.address, operator.address);
+        await pool.connect(operator).initialize(mdg.address, mdo.address, bcash.address, rewardPerBlock, startBlock, startBlock.add(100), locker.address, reserveFund.address, operator.address);
 
         await pool.connect(operator).add(20000, lpMain.address, 0, startBlock.add(20));
         await pool.connect(operator).add(6000, lpFee.address, 400, 0);
@@ -98,7 +98,7 @@ describe('MdgRewardPool.test', () => {
         it('should works correctly', async () => {
             expect(String(await pool.mdg())).to.eq(mdg.address);
             expect(String(await pool.startBlock())).to.eq('15');
-            expect(String(await pool.lockUntilBlock())).to.eq('25');
+            expect(String(await pool.lockUntilBlock())).to.eq('115');
             expect(String(await pool.rewardPerBlock())).to.eq(toWei('0.2'));
             expect(String(await pool.mdoPerBlock())).to.eq(toWei('0.01'));
             expect(String(await pool.bcashPerBlock())).to.eq(toWei('0.01'));
@@ -149,8 +149,10 @@ describe('MdgRewardPool.test', () => {
             }).to.changeTokenBalances(mdo, [bob, pool], [toWei('0.01538461538461538'), toWei('-0.01538461538461538')]);
             let _afterMdg = await mdg.balanceOf(bob.address);
             let _afterReserve = await mdg.balanceOf(reserveFund.address);
-            expect(_afterMdg.sub(_beforeMdg)).to.eq(toWei('0.307692307692307680'));
+            expect(_afterMdg.sub(_beforeMdg)).to.eq(toWei('0.076923076923076920'));
             expect(_afterReserve.sub(_beforeReserve)).to.eq(toWei('0.030769230769230768'));
+            expect(String(await mdg.balanceOf(locker.address))).to.eq(toWei('1.038461538461538450'));
+            expect(String(await locker.lockOf(bob.address))).to.eq(toWei('1.038461538461538450'));
         });
 
         it('bob withdraw all lpFee', async () => {
@@ -162,8 +164,27 @@ describe('MdgRewardPool.test', () => {
             }).to.changeTokenBalances(mdo, [bob, pool], [toWei('0.057692307692307686'), toWei('-0.057692307692307686')]);
             let _afterMdg = await mdg.balanceOf(bob.address);
             let _afterReserve = await mdg.balanceOf(reserveFund.address);
-            expect(_afterMdg.sub(_beforeMdg)).to.eq(toWei('1.153846153846153843'));
-            expect(_afterReserve.sub(_beforeReserve)).to.eq(toWei('0.1153846153846153843'));
+            expect(_afterMdg.sub(_beforeMdg)).to.eq(toWei('0.288461538461538461'));
+            expect(_afterReserve.sub(_beforeReserve)).to.eq(toWei('0.115384615384615384'));
+        });
+
+        it('bob unlock MDG from locker', async () => {
+            const fullLockedAmount = toWei('1.903846153846153832');
+            expect(String(await locker.lockOf(bob.address))).to.eq(fullLockedAmount);
+            expect(String(await locker.released(bob.address))).to.eq(toWei('0'));
+            expect(String(await locker.canUnlockAmount(bob.address))).to.eq(toWei('0'));
+            console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
+            await mineBlocks(ethers, 100);
+            console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
+            expect(String(await locker.canUnlockAmount(bob.address))).to.eq(toWei('0.590192307692307687'));
+            await mineBlocks(ethers, 100);
+            console.log('currentBlk = %s', await getLatestBlockNumber(ethers));
+            expect(String(await locker.canUnlockAmount(bob.address))).to.eq(fullLockedAmount);
+            expect(String(await locker.released(bob.address))).to.eq(toWei('0'));
+            await expect(async () => {
+                await locker.connect(bob).unlock();
+            }).to.changeTokenBalances(mdg, [bob, locker], [fullLockedAmount, toWei('-1.903846153846153832')]);
+            expect(String(await locker.released(bob.address))).to.eq(fullLockedAmount);
         });
     });
 });

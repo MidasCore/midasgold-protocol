@@ -47,6 +47,10 @@ contract MdgLocker is IMdgLocker {
         return _locks[_account];
     }
 
+    function released(address _account) external override view returns (uint256) {
+        return _released[_account];
+    }
+
     function lock(address _account, uint256 _amount) external override {
         require(block.number < startReleaseBlock, "no more lock");
         require(_account != address(0), "no lock to address(0)");
