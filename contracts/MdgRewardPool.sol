@@ -86,6 +86,11 @@ contract MdgRewardPool {
     // The liquidity migrator contract. It has a lot of power. Can only be set through governance (owner).
     ILiquidityMigrator public migrator;
 
+    /* =================== Added variables (need to keep orders for proxy to work) =================== */
+    bool public halvingChecked;
+
+    /* ========== EVENTS ========== */
+
     event Initialized(address indexed executor, uint256 at);
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -137,10 +142,14 @@ contract MdgRewardPool {
     }
 
     modifier checkHalving() {
-        while (block.number >= nextHalvingBlock) {
-            massUpdatePools();
-            rewardPerBlock = rewardPerBlock.mul(9750).div(10000); // x97.5% (2.5% decreased every-week)
-            nextHalvingBlock = nextHalvingBlock.add(BLOCKS_PER_WEEK);
+        if (halvingChecked) {
+            halvingChecked = false;
+            while (block.number >= nextHalvingBlock) {
+                massUpdatePools();
+                rewardPerBlock = rewardPerBlock.mul(9750).div(10000); // x97.5% (2.5% decreased every-week)
+                nextHalvingBlock = nextHalvingBlock.add(BLOCKS_PER_WEEK);
+            }
+            halvingChecked = true;
         }
         _;
     }
@@ -290,7 +299,7 @@ contract MdgRewardPool {
     }
 
     // Update reward variables for all pools. Be careful of gas spending!
-    function massUpdatePools() public checkHalving {
+    function massUpdatePools() public {
         uint256 length = poolInfo.length;
         for (uint256 pid = 0; pid < length; ++pid) {
             updatePool(pid);
@@ -298,7 +307,7 @@ contract MdgRewardPool {
     }
 
     // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public checkHalving {
+    function updatePool(uint256 _pid) public {
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number <= pool.lastRewardBlock) {
             return;
@@ -345,7 +354,7 @@ contract MdgRewardPool {
     }
 
     // Deposit LP tokens.
-    function deposit(uint256 _pid, uint256 _amount) external checkHalving {
+    function deposit(uint256 _pid, uint256 _amount) public checkHalving {
         address _sender = msg.sender;
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_sender];
@@ -370,7 +379,7 @@ contract MdgRewardPool {
     }
 
     // Withdraw LP tokens.
-    function withdraw(uint256 _pid, uint256 _amount) external checkHalving {
+    function withdraw(uint256 _pid, uint256 _amount) public checkHalving {
         address _sender = msg.sender;
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_sender];
@@ -385,6 +394,24 @@ contract MdgRewardPool {
         user.mdoDebt = user.amount.mul(pool.accMdoPerShare).div(1e18);
         user.bcashDebt = user.amount.mul(pool.accBcashPerShare).div(1e18);
         emit Withdraw(_sender, _pid, _amount);
+    }
+
+    function harvestAllRewards() public checkHalving {
+        uint256 length = poolInfo.length;
+        for (uint256 _pid = 0; _pid < length; ++_pid) {
+            if (userInfo[_pid][msg.sender].amount > 0) {
+                withdraw(_pid, 0);
+            }
+        }
+    }
+
+    function harvestAndRestake() public {
+        harvestAllRewards();
+        uint256 _mdgBal = IERC20(mdg).balanceOf(address(this));
+        if (_mdgBal > 0) {
+            IERC20(mdg).safeIncreaseAllowance(address(this), _mdgBal);
+            deposit(8, _mdgBal);
+        }
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
@@ -462,6 +489,10 @@ contract MdgRewardPool {
     function setBcashPerBlock(uint256 _bcashPerBlock) external onlyOperator {
         require(_bcashPerBlock <= 0.2 ether, "too high reward"); // <= 0.2 bCash per block
         bcashPerBlock = _bcashPerBlock;
+    }
+
+    function setHalvingChecked(bool _halvingChecked) external onlyOperator {
+        halvingChecked = _halvingChecked;
     }
 
     function governanceRecoverUnsupported(IERC20 _token, uint256 amount, address to) external onlyOperator {
