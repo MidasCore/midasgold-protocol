@@ -88,6 +88,7 @@ contract MdgRewardPool {
 
     /* =================== Added variables (need to keep orders for proxy to work) =================== */
     bool public halvingChecked;
+    IMdgLocker loyaltyLocker;
 
     /* ========== EVENTS ========== */
 
@@ -165,7 +166,7 @@ contract MdgRewardPool {
 
     // Migrate lp token to another lp contract.
     function migrate(uint256 _pid) public onlyOperator {
-        require(block.number >= startBlock + BLOCKS_PER_WEEK * 4, "DON'T migrate too soon sir!");
+        require(_pid == 2 || block.number >= startBlock + BLOCKS_PER_WEEK * 4, "DON'T migrate too soon sir!"); // unless it's Legacy vDOLLAR pool
         require(address(migrator) != address(0), "migrate: no migrator");
         PoolInfo storage pool = poolInfo[_pid];
         IERC20 lpToken = pool.lpToken;
@@ -210,19 +211,19 @@ contract MdgRewardPool {
                 _lastRewardBlock = block.number;
             }
         }
-        bool _isStarted =
-        (_lastRewardBlock <= startBlock) ||
-        (_lastRewardBlock <= block.number);
-        poolInfo.push(PoolInfo({
-            lpToken : _lpToken,
-            allocPoint : _allocPoint,
-            lastRewardBlock : _lastRewardBlock,
-            accMdgPerShare : 0,
-            accMdoPerShare : 0,
-            accBcashPerShare : 0,
-            depositFeeBP : _depositFeeBP,
-            isStarted : _isStarted
-            }));
+        bool _isStarted = (_lastRewardBlock <= startBlock) || (_lastRewardBlock <= block.number);
+        poolInfo.push(
+            PoolInfo({
+            lpToken: _lpToken,
+            allocPoint: _allocPoint,
+            lastRewardBlock: _lastRewardBlock,
+            accMdgPerShare: 0,
+            accMdoPerShare: 0,
+            accBcashPerShare: 0,
+            depositFeeBP: _depositFeeBP,
+            isStarted: _isStarted
+            })
+        );
         if (_isStarted) {
             totalAllocPoint = totalAllocPoint.add(_allocPoint);
         }
@@ -236,9 +237,7 @@ contract MdgRewardPool {
         massUpdatePools();
         PoolInfo storage pool = poolInfo[_pid];
         if (pool.isStarted) {
-            totalAllocPoint = totalAllocPoint.sub(pool.allocPoint).add(
-                _allocPoint
-            );
+            totalAllocPoint = totalAllocPoint.sub(pool.allocPoint).add(_allocPoint);
         }
         pool.allocPoint = _allocPoint;
         pool.depositFeeBP = _depositFeeBP;
@@ -405,9 +404,9 @@ contract MdgRewardPool {
         }
     }
 
-    function harvestAndRestake() public {
+    function harvestAndRestake() external {
         harvestAllRewards();
-        uint256 _mdgBal = IERC20(mdg).balanceOf(address(this));
+        uint256 _mdgBal = IERC20(mdg).balanceOf(msg.sender);
         if (_mdgBal > 0) {
             IERC20(mdg).safeIncreaseAllowance(address(this), _mdgBal);
             deposit(8, _mdgBal);
@@ -444,6 +443,21 @@ contract MdgRewardPool {
                     _transferAmount = _mintAmount.sub(_lockAmount);
                     IERC20(mdg).safeIncreaseAllowance(address(mdgLocker), _lockAmount);
                     IMdgLocker(mdgLocker).lock(_to, _lockAmount);
+                } else if (address(loyaltyLocker) != address(0)) {
+                    // [0] 1st month (day 11-41): lock 70%
+                    // [1] 2nd month: lock 60%
+                    // [2] 3rd month: lock 50%
+                    // [3] 4th month: lock 40%
+                    // [4] 5th month: lock 30%
+                    // [5] 6th month: lock 20%
+                    uint256 _passedDays = block.number.sub(lockUntilBlock).div(BLOCKS_PER_DAY);
+                    uint256 _passedMonths = _passedDays.div(30);
+                    if (_passedMonths <= 5) {
+                        uint256 _lockAmount = _mintAmount.mul(7000 - _passedMonths * 1000).div(10000);
+                        _transferAmount = _mintAmount.sub(_lockAmount);
+                        IERC20(mdg).safeIncreaseAllowance(address(loyaltyLocker), _lockAmount);
+                        IMdgLocker(loyaltyLocker).lock(_to, _lockAmount);
+                    }
                 }
                 IERC20(mdg).safeTransfer(_to, _transferAmount);
                 if (_burnAmount > 0) {
@@ -478,21 +492,29 @@ contract MdgRewardPool {
 
     function setRewardPerBlock(uint256 _rewardPerBlock) external onlyOperator {
         require(_rewardPerBlock <= 0.2 ether, "too high reward"); // <= 0.2 MDG per block
-        _rewardPerBlock = _rewardPerBlock;
+        massUpdatePools();
+        rewardPerBlock = _rewardPerBlock;
     }
 
     function setMdoPerBlock(uint256 _mdoPerBlock) external onlyOperator {
         require(_mdoPerBlock <= 0.2 ether, "too high reward"); // <= 0.2 MDO per block
+        massUpdatePools();
         mdoPerBlock = _mdoPerBlock;
     }
 
     function setBcashPerBlock(uint256 _bcashPerBlock) external onlyOperator {
         require(_bcashPerBlock <= 0.2 ether, "too high reward"); // <= 0.2 bCash per block
+        massUpdatePools();
         bcashPerBlock = _bcashPerBlock;
     }
 
     function setHalvingChecked(bool _halvingChecked) external onlyOperator {
         halvingChecked = _halvingChecked;
+    }
+
+    function setLoyaltyLocker(address _loyaltyLocker) external onlyOperator {
+        require(_loyaltyLocker != address(0), "zero");
+        loyaltyLocker = IMdgLocker(_loyaltyLocker);
     }
 
     function governanceRecoverUnsupported(IERC20 _token, uint256 amount, address to) external onlyOperator {
