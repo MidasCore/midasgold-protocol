@@ -29,7 +29,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
     address public operator = address(0xD025628eEe504330f1282C96B28a731E3995ff66); // governance
     bool public initialized = false;
     address public reserveFund = address(0x39d91fb1Cb86c836da6300C0e700717d5dFe289F);
-    uint256 public reservePercent = 1000; // 10%
+    uint256 public reservePercent = 0; // 1% ~ 100
     uint256 public lockPercent = 5000; // 50%
     uint256 public rewardHalvingRate = 7500; // 75%
     IMdgLocker private layeredMdgLocker;
@@ -96,6 +96,11 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         layeredMdgLocker = IMdgLocker(_layeredMdgLocker);
         reserveFund = _reserveFund;
         operator = _operator;
+
+        reservePercent = 0; // 1% ~ 100
+        lockPercent = 5000; // 50%
+        rewardHalvingRate = 7500; // 75%
+        totalAllocPoint = 0;
 
         initialized = true;
         emit Initialized(msg.sender, block.number);
