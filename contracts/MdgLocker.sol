@@ -22,6 +22,7 @@ contract MdgLocker is IMdgLocker {
     using SafeERC20 for IERC20;
 
     address public mdg = address(0xC1eDCc306E6faab9dA629efCa48670BE4678779D);
+    address public operator = address(0xD025628eEe504330f1282C96B28a731E3995ff66);
 
     uint256 public startReleaseBlock;
     uint256 public endReleaseBlock;
@@ -31,12 +32,23 @@ contract MdgLocker is IMdgLocker {
     mapping(address => uint256) private _released;
 
     event Lock(address indexed to, uint256 value);
+    event EditLocker(uint256 indexed _startReleaseBlock, uint256 _endReleaseBlock);
+
+    modifier onlyOperator() {
+        require(operator == msg.sender, "MdgLocker: caller is not the operator");
+        _;
+    }
+
+    function setOperator(address _operator) external onlyOperator {
+        operator = _operator;
+    }
 
     constructor(address _mdg, uint256 _startReleaseBlock, uint256 _endReleaseBlock) public {
         require(_endReleaseBlock > _startReleaseBlock, "endReleaseBlock < startReleaseBlock");
         mdg = _mdg;
         startReleaseBlock = _startReleaseBlock;
         endReleaseBlock = _endReleaseBlock;
+        operator = msg.sender;
     }
 
     function totalLock() external override view returns (uint256) {
@@ -85,5 +97,15 @@ contract MdgLocker is IMdgLocker {
         IERC20(mdg).safeTransfer(msg.sender, _amount);
         _released[msg.sender] = _released[msg.sender].add(_amount);
         _totalLock = _totalLock.sub(_amount);
+    }
+
+    function editLocker(uint256 _startReleaseBlock, uint256 _endReleaseBlock) external onlyOperator {
+        require(_endReleaseBlock > _startReleaseBlock, "endReleaseBlock < startReleaseBlock");
+        require(_startReleaseBlock > block.number, "late");
+        require(_totalLock == 0, "Can't replace a nonempty Locker");
+        startReleaseBlock = _startReleaseBlock;
+        endReleaseBlock = _endReleaseBlock;
+
+        emit EditLocker(_startReleaseBlock, _endReleaseBlock);
     }
 }
