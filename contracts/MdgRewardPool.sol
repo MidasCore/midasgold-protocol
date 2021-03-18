@@ -444,12 +444,12 @@ contract MdgRewardPool {
                     IERC20(mdg).safeIncreaseAllowance(address(mdgLocker), _lockAmount);
                     IMdgLocker(mdgLocker).lock(_to, _lockAmount);
                 } else if (address(loyaltyLocker) != address(0)) {
-                    // [0] 1st month (day 11-41): lock 70%
-                    // [1] 2nd month: lock 60%
-                    // [2] 3rd month: lock 50%
-                    // [3] 4th month: lock 40%
-                    // [4] 5th month: lock 30%
-                    // [5] 6th month: lock 20%
+                    // [0] 1st month (day 11-40): lock 70%
+                    // [1] 2nd month (day 41-70): lock 60%
+                    // [2] 3rd month (day 71-100): lock 50%
+                    // [3] 4th month (day 101-130): lock 40%
+                    // [4] 5th month (day 131-160): lock 30%
+                    // [5] 6th month (day 160-190): lock 20%
                     uint256 _passedDays = block.number.sub(lockUntilBlock).div(BLOCKS_PER_DAY);
                     uint256 _passedMonths = _passedDays.div(30);
                     if (_passedMonths <= 5) {

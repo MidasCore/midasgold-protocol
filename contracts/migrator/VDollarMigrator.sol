@@ -27,8 +27,8 @@ contract VDollarMigrator is ILiquidityMigrator {
     IERC20 public legacyVDollar = IERC20(0x3F6ad3c13E3a6bB5655F09A95cA05B6FF4c3DCd6);
     IERC20 public vDollar = IERC20(0x6334D757FDa9326fa1fAe7f9762485B722403ceE);
 
-    address public legacyVDollarSwap = address(0x7569f9adabC99780B7A91B16666Bb985177D1DCa);
-    address public vDollarSwap = address(0x0a7E1964355020F85FED96a6D8eB10baaC457645);
+    address public legacyVDollarSwap = address(0x0a7E1964355020F85FED96a6D8eB10baaC457645);
+    address public vDollarSwap = address(0x7569f9adabC99780B7A91B16666Bb985177D1DCa);
 
     IStableSwapRouter public router = IStableSwapRouter(0xC437B8D65EcdD43Cda92739E09ebd68BBE1965e1);
 
