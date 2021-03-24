@@ -17,13 +17,12 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 
 import "./interfaces/ILiquidityMigrator.sol";
 import "./interfaces/ILayeredMdgToken.sol";
-import "./interfaces/IMdgLocker.sol";
 
 contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, etc.
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
-    uint256 public constant BLOCKS_PER_DAY = 28800; // 86400 / 3;
+//    uint256 public constant BLOCKS_PER_DAY = 28800; // 86400 / 3;
     uint256 public constant BLOCKS_PER_WEEK = 201600; // 28800 * 7;
 
     address public operator = address(0xD025628eEe504330f1282C96B28a731E3995ff66); // governance
@@ -32,27 +31,33 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
     uint256 public reservePercent = 0; // 1% ~ 100
     uint256 public lockPercent = 5000; // 50%
     uint256 public rewardHalvingRate = 7500; // 75%
-    IMdgLocker private layeredMdgLocker;
     address public mdg; // address of Mdg[N]Token
     uint256 public mdgPoolId;
     uint256 public layerId; // from 2
     uint256 public totalAllocPoint = 0;// Total allocation points. Must be the sum of all allocation points in all pools.
-    uint256 public rewardPerBlock; // 0.1
+    uint256 public rewardPerBlock; // 0.1 * 1e18
     uint256 public startBlock;    // The block number when Mdg[N] mining starts.
-    uint256 public endBlock; // default = startBlock + 10 weeks
-    uint256 public lockUntilBlock;
+    uint256 public endBlock; // default = startBlock + 8 weeks
+    uint256 public bigHalvingBlock; // The block to reduce 50% of rewardPerBlock. Default = startBlock + 2 weeks
+    uint256 public lockUntilBlock; // default = startBlock + 4 weeks
     uint256 public nextHalvingBlock;
+    uint256 public halvingPeriod; // default = 1 week;
 
     struct UserInfo {
         uint256 amount; // How many LP tokens the user has provided.
         uint256 rewardDebt; // Reward debt. See explanation below.
+        uint256 reward2Debt;
     }
 
     struct PoolInfo {
         IERC20 lpToken; // Address of LP token contract.
+        address reward2; // additional reward
         uint256 allocPoint; // How many allocation points assigned to this pool. Mdg[N]s to distribute per block.
         uint256 lastRewardBlock; // Last block number that Mdg[N]s distribution occurs.
         uint256 accMdgPerShare; // Accumulated Mdg[N] per share, times 1e18. See below.
+        uint256 accReward2PerShare;
+        uint256 reward2PerBlock; // 0.1 * 1e18
+        uint256 reward2EndBlock;
         uint16 depositFeeBP; // Deposit fee in basis points
         bool isStarted; // if lastRewardBlock has passed
     }
@@ -71,36 +76,52 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event RewardPaid(address indexed user, uint256 amount);
+    event RewardPaid(address indexed user, address token, uint256 amount);
+
+    // Locker {
+    uint256 public startReleaseBlock;
+    uint256 public endReleaseBlock;
+
+    uint256 public totalLock;
+    mapping(address => uint256) public mdgLocked;
+    mapping(address => uint256) public mdgReleased;
+
+    event Lock(address indexed to, uint256 value);
+    // }
 
     function initialize(
         uint256 _layerId,
         address _mdg, // Mdg[N]Token contract
-        uint256 _rewardPerBlock,
+        uint256 _rewardPerBlock,//0.06 * 1e18
         uint256 _startBlock,
-        uint256 _lockUntilBlock,
-        address _layeredMdgLocker,
         address _reserveFund,
         address _operator
     ) public {
         require(!initialized || (startBlock > block.number && poolInfo.length == 0 && operator == msg.sender), "initialized");
         require(block.number < _startBlock, "late");
         require(_layerId >= 2, "from 2");
+//        require(_endReleaseBlock > _startReleaseBlock, "endReleaseBlock < startReleaseBlock");
+
         layerId = _layerId;
         mdg = _mdg;
         rewardPerBlock = _rewardPerBlock; // start at 0.1 Mdg[N] per block for the first week
         startBlock = _startBlock;
-        endBlock = _startBlock + BLOCKS_PER_WEEK * 10;
-        lockUntilBlock = _lockUntilBlock;// _startBlock + 4 weeks
+        endBlock = _startBlock + BLOCKS_PER_WEEK * 8;
+        bigHalvingBlock = _startBlock + BLOCKS_PER_WEEK * 2;
+        lockUntilBlock = _startBlock + BLOCKS_PER_WEEK * 4;// _startBlock + 4 weeks
         nextHalvingBlock = startBlock.add(BLOCKS_PER_WEEK);
-        layeredMdgLocker = IMdgLocker(_layeredMdgLocker);
         reserveFund = _reserveFund;
         operator = _operator;
 
+        halvingPeriod = BLOCKS_PER_WEEK;
         reservePercent = 0; // 1% ~ 100
         lockPercent = 5000; // 50%
         rewardHalvingRate = 7500; // 75%
         totalAllocPoint = 0;
+
+        // Locker
+        startReleaseBlock = lockUntilBlock;//_startReleaseBlock;
+        endReleaseBlock = endBlock;//_endReleaseBlock;
 
         initialized = true;
         emit Initialized(msg.sender, block.number);
@@ -112,20 +133,28 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
     }
 
     modifier checkHalving() {
-        if (halvingChecked && block.number < endBlock) {
+        if (halvingChecked) {
             halvingChecked = false;
-            while (block.number >= nextHalvingBlock) {
-                massUpdatePools();
-                if (nextHalvingBlock >= lockUntilBlock && lockUntilBlock > startBlock && nextHalvingBlock.sub(BLOCKS_PER_WEEK) < lockUntilBlock) {
-                    rewardPerBlock = rewardPerBlock.mul(5000).div(10000); // decreased 50% when unlock has started
+            uint256 target = block.number < endBlock ? block.number : endBlock;
+            while (target >= nextHalvingBlock) {
+                massUpdatePools(nextHalvingBlock);
+                if (nextHalvingBlock >= bigHalvingBlock && nextHalvingBlock.sub(halvingPeriod) < bigHalvingBlock) {
+                    rewardPerBlock = rewardPerBlock.mul(5000).div(10000); // decrease 50%
                 } else {
                     rewardPerBlock = rewardPerBlock.mul(rewardHalvingRate).div(10000); // x75% (25% decreased every-week)
                 }
-                nextHalvingBlock = nextHalvingBlock.add(BLOCKS_PER_WEEK);
+                nextHalvingBlock = nextHalvingBlock.add(halvingPeriod);
             }
             halvingChecked = true;
         }
         _;
+    }
+
+    function setHalvingPeriod(uint256 _halvingPeriod, uint256 _nextHalvingBlock) external onlyOperator {
+        require(_halvingPeriod >= 100, "zero"); // >= 5 minutes
+        require(_nextHalvingBlock > block.number, "over");
+        halvingPeriod = _halvingPeriod;
+        nextHalvingBlock = _nextHalvingBlock;
     }
 
     function setReserveFund(address _reserveFund) external onlyOperator {
@@ -186,13 +215,18 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         bool _isStarted = (_lastRewardBlock <= startBlock) || (_lastRewardBlock <= block.number);
         poolInfo.push(
             PoolInfo({
-        lpToken: _lpToken,
-        allocPoint: _allocPoint,
-        lastRewardBlock: _lastRewardBlock,
-        accMdgPerShare: 0,
-        depositFeeBP: _depositFeeBP,
-        isStarted: _isStarted
-        })
+            lpToken: _lpToken,
+            reward2: address(0),
+            allocPoint: _allocPoint,
+            lastRewardBlock: _lastRewardBlock,
+            accMdgPerShare: 0,
+            accReward2PerShare: 0,
+            reward2PerBlock: 0,
+            reward2EndBlock: 0,
+
+            depositFeeBP: _depositFeeBP,
+            isStarted: _isStarted
+            })
         );
         if (_isStarted) {
             totalAllocPoint = totalAllocPoint.add(_allocPoint);
@@ -215,21 +249,39 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         pool.depositFeeBP = _depositFeeBP;
     }
 
-    // Return accumulate rewarded blocks over the given _from to _to block.
-    function getRewardBlocks(uint256 _from, uint256 _to) public view returns (uint256) {
-        if (_from >= _to) return 0;
-        if (_from >= endBlock) return 0;
-        if (_to <= startBlock) {
-            return 0;
-        } else {
-            if (_from <= startBlock) {
-                if (_to >= endBlock) return endBlock.sub(startBlock);
-                return _to.sub(startBlock);
-            } else {
-                if (_to >= endBlock) return endBlock.sub(_from);
-                return _to.sub(_from);
+    // Add additional reward for a pool
+    function setReward2(uint256 _pid, address _reward2, uint256 _reward2PerBlock, uint256 _reward2EndBlock) external onlyOperator {
+        PoolInfo storage pool = poolInfo[_pid];
+        require(_reward2 != address(0), "address(0)");
+        require(_reward2PerBlock < 0.9 ether, "too high reward");
+        if (_reward2 == pool.reward2) {// update info
+            updatePool(_pid);
+            if (_reward2EndBlock > 0) {
+                require(pool.reward2EndBlock > block.number, "reward2 is over");
+                require(_reward2EndBlock > block.number, "late");
+                require(_reward2EndBlock <= endBlock, "reward2 is redundant");
+                pool.reward2EndBlock = _reward2EndBlock;
             }
+            pool.reward2PerBlock = _reward2PerBlock;
+        } else {
+            require(pool.reward2 == address(0), "don't support multiple additional rewards in a pool");
+//            require(!pool.isStarted, "Pool started");
+            require(_reward2EndBlock > block.number, "late");
+            require(_reward2PerBlock > 0, "zero");
+            pool.reward2 = _reward2;
+            pool.accReward2PerShare = 0;
+            pool.reward2PerBlock = _reward2PerBlock;
+            pool.reward2EndBlock = _reward2EndBlock > endBlock ? endBlock : _reward2EndBlock;
         }
+    }
+
+    // Return accumulate rewarded blocks over the given _from to _to block.
+    function getRewardBlocks(uint256 _from, uint256 _to, uint256 _endBlock) internal view returns (uint256) {
+        if (_from >= _to) return 0;
+        if (_from >= _endBlock) return 0;
+        if (_to <= startBlock) return 0;
+        if (_to > _endBlock) _to = _endBlock;
+        return _to.sub(_from <= startBlock ? startBlock : _from);
     }
 
     // View function to see pending Mdg[N]s on frontend.
@@ -239,42 +291,67 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         uint256 accMdgPerShare = pool.accMdgPerShare;
         uint256 lpSupply = pool.lpToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
-            uint256 _generatedReward = getRewardBlocks(pool.lastRewardBlock, block.number).mul(rewardPerBlock);
+            uint256 _generatedReward = getRewardBlocks(pool.lastRewardBlock, block.number, endBlock).mul(rewardPerBlock);
             uint256 _mdgReward = _generatedReward.mul(pool.allocPoint).div(totalAllocPoint);
             accMdgPerShare = accMdgPerShare.add(_mdgReward.mul(1e18).div(lpSupply));
         }
         return user.amount.mul(accMdgPerShare).div(1e18).sub(user.rewardDebt);
     }
 
+    function pendingReward2(uint256 _pid, address _user) external view returns (uint256) {
+        PoolInfo storage pool = poolInfo[_pid];
+        if (pool.reward2 == address(0)) return 0;
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 accReward2PerShare = pool.accReward2PerShare;
+        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
+        if (block.number > pool.lastRewardBlock && lpSupply != 0) {
+            uint256 _reward2 = getRewardBlocks(pool.lastRewardBlock, block.number, pool.reward2EndBlock).mul(pool.reward2PerBlock);
+            accReward2PerShare = accReward2PerShare.add(_reward2.mul(1e18).div(lpSupply));
+        }
+        return user.amount.mul(accReward2PerShare).div(1e18).sub(user.reward2Debt);
+    }
+
     // Update reward variables for all pools. Be careful of gas spending!
-    function massUpdatePools() public {
+    function massUpdatePools() public checkHalving {
+        massUpdatePools(block.number);
+    }
+
+    function massUpdatePools(uint256 _targetTime) private {
         uint256 length = poolInfo.length;
         for (uint256 pid = 0; pid < length; ++pid) {
-            updatePool(pid);
+            updatePool(pid, _targetTime);
         }
     }
 
     // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public {
+    function updatePool(uint256 _pid) public checkHalving {
+        updatePool(_pid, block.number);
+    }
+
+    function updatePool(uint256 _pid, uint256 _targetTime) private {
         PoolInfo storage pool = poolInfo[_pid];
-        if (block.number <= pool.lastRewardBlock) {
+        if (_targetTime <= pool.lastRewardBlock) {
             return;
         }
         uint256 lpSupply = pool.lpToken.balanceOf(address(this));
         if (lpSupply == 0) {
-            pool.lastRewardBlock = block.number;
+            pool.lastRewardBlock = _targetTime;
             return;
         }
-        if (!pool.isStarted) {
+        if (!pool.isStarted) { // note: pool.lastRewardBlock < _targetTime  <= block.number
             pool.isStarted = true;
             totalAllocPoint = totalAllocPoint.add(pool.allocPoint);
         }
         if (totalAllocPoint > 0) {
-            uint256 _generatedReward = getRewardBlocks(pool.lastRewardBlock, block.number);
+            uint256 _generatedReward = getRewardBlocks(pool.lastRewardBlock, _targetTime, endBlock);
             uint256 _mdgReward = _generatedReward.mul(rewardPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
             pool.accMdgPerShare = pool.accMdgPerShare.add(_mdgReward.mul(1e18).div(lpSupply));
+            if (pool.lastRewardBlock < pool.reward2EndBlock) {
+                uint256 _reward2 = getRewardBlocks(pool.lastRewardBlock, _targetTime, pool.reward2EndBlock).mul(pool.reward2PerBlock);
+                pool.accReward2PerShare = pool.accReward2PerShare.add(_reward2.mul(1e18).div(lpSupply));
+            }
         }
-        pool.lastRewardBlock = block.number;
+        pool.lastRewardBlock = _targetTime;
     }
 
     function _harvestReward(uint256 _pid, address _account) internal {
@@ -283,7 +360,12 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         uint256 _pendingReward = user.amount.mul(pool.accMdgPerShare).div(1e18).sub(user.rewardDebt);
         if (_pendingReward > 0) {
             _safeMdgMint(_account, _pendingReward);
-            emit RewardPaid(_account, _pendingReward);
+            emit RewardPaid(_account, mdg, _pendingReward);
+        }
+        uint256 _pendingReward2 = user.amount.mul(pool.accReward2PerShare).div(1e18).sub(user.reward2Debt);
+        if (_pendingReward2 > 0) {
+            _safeTokenTransfer(pool.reward2, _account, _pendingReward2);
+            emit RewardPaid(_account, pool.reward2, _pendingReward2);
         }
     }
 
@@ -292,7 +374,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         address _sender = msg.sender;
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_sender];
-        updatePool(_pid);
+        updatePool(_pid, block.number);
         if (user.amount > 0) {
             _harvestReward(_pid, _sender);
         }
@@ -307,6 +389,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
             }
         }
         user.rewardDebt = user.amount.mul(pool.accMdgPerShare).div(1e18);
+        user.reward2Debt = user.amount.mul(pool.accReward2PerShare).div(1e18);
         emit Deposit(_sender, _pid, _amount);
     }
 
@@ -316,13 +399,14 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_sender];
         require(user.amount >= _amount, "withdraw: not good");
-        updatePool(_pid);
+        updatePool(_pid, block.number);
         _harvestReward(_pid, _sender);
         if (_amount > 0) {
             user.amount = user.amount.sub(_amount);
             pool.lpToken.safeTransfer(_sender, _amount);
         }
         user.rewardDebt = user.amount.mul(pool.accMdgPerShare).div(1e18);
+        user.reward2Debt = user.amount.mul(pool.accReward2PerShare).div(1e18);
         emit Withdraw(_sender, _pid, _amount);
     }
 
@@ -345,10 +429,6 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         }
     }
 
-    function setMdgPoolId(uint256 _mdgPoolId) external onlyOperator {
-        mdgPoolId = _mdgPoolId;
-    }
-
     // Withdraw without caring about rewards. EMERGENCY ONLY.
     function emergencyWithdraw(uint256 _pid) external checkHalving {
         PoolInfo storage pool = poolInfo[_pid];
@@ -356,6 +436,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         uint256 _amount = user.amount;
         user.amount = 0;
         user.rewardDebt = 0;
+        user.reward2Debt = 0;
         pool.lpToken.safeTransfer(msg.sender, _amount);
         emit EmergencyWithdraw(msg.sender, _pid, _amount);
     }
@@ -372,8 +453,10 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
                 if (block.number < lockUntilBlock) {
                     uint256 _lockAmount = _mintAmount.mul(lockPercent).div(10000);
                     _transferAmount = _mintAmount.sub(_lockAmount);
-                    IERC20(mdg).safeIncreaseAllowance(address(layeredMdgLocker), _lockAmount);
-                    layeredMdgLocker.lock(_to, _lockAmount);
+
+                    mdgLocked[_to] = mdgLocked[_to].add(_lockAmount);
+                    totalLock = totalLock.add(_lockAmount);
+                    emit Lock(_to, _lockAmount);
                 }
                 IERC20(mdg).safeTransfer(_to, _transferAmount);
                 if (reservePercent > 0 && reserveFund != address(0)) {
@@ -397,6 +480,10 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         if (_amount > 0) {
             IERC20(_token).safeTransfer(_to, _amount);
         }
+    }
+
+    function setMdgPoolId(uint256 _mdgPoolId) external onlyOperator {
+        mdgPoolId = _mdgPoolId;
     }
 
     function setRates(uint256 _reservePercent, uint256 _lockPercent, uint256 _rewardHalvingRate) external onlyOperator { // tune and vote
@@ -423,14 +510,65 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         halvingChecked = _halvingChecked;
     }
 
-    function setStartBlock(uint256 _startBlock, uint256 _lockUntilBlock) external onlyOperator {
-        require(block.number < startBlock, "The layer started!");
-        require(block.number < _startBlock, "late");
-        startBlock = _startBlock;
-        lockUntilBlock = _lockUntilBlock;
-        nextHalvingBlock = startBlock.add(BLOCKS_PER_WEEK);
-        endBlock = startBlock + BLOCKS_PER_WEEK * 10;
+    function setLastRewardBlock(uint256 _pid, uint256 _lastRewardBlock) external onlyOperator {
+        require(_lastRewardBlock >= startBlock, "bad _lastRewardBlock");
+        require(_lastRewardBlock > block.number, "late");
+        PoolInfo storage pool = poolInfo[_pid];
+        require(!pool.isStarted || startBlock > block.number, "Pool started!");
+        pool.lastRewardBlock = _lastRewardBlock;
+        if (pool.isStarted) {
+            pool.isStarted = false;
+            totalAllocPoint = totalAllocPoint.sub(pool.allocPoint);
+        } else if (_lastRewardBlock == startBlock) {
+            pool.isStarted = true;
+            totalAllocPoint = totalAllocPoint.add(pool.allocPoint);
+        }
     }
+
+    function setStartBlock(uint256 _startBlock, uint256 _lockUntilBlock, uint256 _bigHalvingBlock, uint256 _endBlock) external onlyOperator {
+        if (_startBlock > block.number) {
+            require(block.number < startBlock, "The layer started!");
+            startBlock = _startBlock;
+            nextHalvingBlock = startBlock.add(BLOCKS_PER_WEEK);
+            bigHalvingBlock = startBlock + BLOCKS_PER_WEEK * 2;
+            lockUntilBlock = startBlock + BLOCKS_PER_WEEK * 4;
+            endBlock = startBlock + BLOCKS_PER_WEEK * 8;
+        }
+        if (_bigHalvingBlock > block.number) bigHalvingBlock = _bigHalvingBlock;
+        if (_endBlock > block.number) {
+            require(block.number < endBlock, "Layer finished");
+            endBlock = _endBlock;
+        }
+        if (_lockUntilBlock > block.number) {
+            require(block.number < lockUntilBlock, "Lock has released");
+            require(_lockUntilBlock > startBlock, "Bad _lockUntilBlock");
+            lockUntilBlock = _lockUntilBlock;
+        }
+        if (lockUntilBlock > endBlock) lockUntilBlock = endBlock;
+        startReleaseBlock = lockUntilBlock;
+        endReleaseBlock = endBlock;
+    }
+
+    // locker_field {
+    function canUnlockAmount(address _account) public view returns (uint256) {
+        if (block.number < startReleaseBlock) return 0;
+        if (block.number >= endReleaseBlock) return mdgLocked[_account].sub(mdgReleased[_account]);
+        uint256 _releasedBlock = block.number.sub(startReleaseBlock);
+        uint256 _totalVestingBlock = endReleaseBlock.sub(startReleaseBlock);
+        return mdgLocked[_account].mul(_releasedBlock).div(_totalVestingBlock).sub(mdgReleased[_account]);
+    }
+
+    function unlock() external {
+        require(block.number > startReleaseBlock, "still locked");
+        require(mdgLocked[msg.sender] >= mdgReleased[msg.sender], "no locked");
+
+        uint256 _amount = canUnlockAmount(msg.sender);
+
+        IERC20(mdg).safeTransfer(msg.sender, _amount);
+        mdgReleased[msg.sender] = mdgReleased[msg.sender].add(_amount);
+        totalLock = totalLock.sub(_amount);
+    }
+    // } end_locker_field
 
     function governanceRecoverUnsupported(IERC20 _token, uint256 amount, address to) external onlyOperator {
         if (block.number < startBlock + BLOCKS_PER_WEEK * 104) {

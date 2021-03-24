@@ -35,7 +35,7 @@ contract MdgRewardPool {
     address public reserveFund;
     uint256 public reservePercent = 1000; // 100 = 1%
     uint256 public burnPercent = 250;
-
+    uint256 public rewardHalvingRate = 9750; // 97.5%
     uint256 public lockPercent = 7500; // 75%
     IMdgLocker mdgLocker;
 
@@ -124,7 +124,7 @@ contract MdgRewardPool {
         reservePercent = 1000; // 10%
         burnPercent = 250; // 2.5%
         lockPercent = 7500; // 75%
-
+        rewardHalvingRate = 9750; // 97.5%
         mdoPerBlock = 0.01 ether;
         bcashPerBlock = 0.01 ether;
 
@@ -147,7 +147,7 @@ contract MdgRewardPool {
             halvingChecked = false;
             while (block.number >= nextHalvingBlock) {
                 massUpdatePools();
-                rewardPerBlock = rewardPerBlock.mul(9750).div(10000); // x97.5% (2.5% decreased every-week)
+                rewardPerBlock = rewardPerBlock.mul(rewardHalvingRate).div(10000); // x97.5% (2.5% decreased every-week)
                 nextHalvingBlock = nextHalvingBlock.add(BLOCKS_PER_WEEK);
             }
             halvingChecked = true;
@@ -166,7 +166,7 @@ contract MdgRewardPool {
 
     // Migrate lp token to another lp contract.
     function migrate(uint256 _pid) public onlyOperator {
-        require(_pid == 2 || block.number >= startBlock + BLOCKS_PER_WEEK * 4, "DON'T migrate too soon sir!"); // unless it's Legacy vDOLLAR pool
+        require(block.number >= startBlock + BLOCKS_PER_WEEK * 4, "DON'T migrate too soon sir!"); // unless it's Legacy vDOLLAR pool
         require(address(migrator) != address(0), "migrate: no migrator");
         PoolInfo storage pool = poolInfo[_pid];
         IERC20 lpToken = pool.lpToken;
@@ -241,6 +241,16 @@ contract MdgRewardPool {
         }
         pool.allocPoint = _allocPoint;
         pool.depositFeeBP = _depositFeeBP;
+    }
+
+    function setRates(uint256 _reservePercent, uint256 _lockPercent, uint256 _rewardHalvingRate) external onlyOperator {
+        require(_rewardHalvingRate < 10000, "exceed 100%");
+        require(_rewardHalvingRate > 0, "shouldn't set to 0%"); // can't trace
+        require(_reservePercent <= 2000, "exceed 20%");
+        require(_lockPercent <= 9000, "exceed 90%");
+        reservePercent = _reservePercent;
+        lockPercent = _lockPercent;
+        rewardHalvingRate = _rewardHalvingRate;
     }
 
     // Return accumulate rewarded blocks over the given _from to _to block.
