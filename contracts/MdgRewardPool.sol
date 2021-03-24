@@ -248,6 +248,7 @@ contract MdgRewardPool {
         require(_rewardHalvingRate > 0, "shouldn't set to 0%"); // can't trace
         require(_reservePercent <= 2000, "exceed 20%");
         require(_lockPercent <= 9000, "exceed 90%");
+        massUpdatePools();
         reservePercent = _reservePercent;
         lockPercent = _lockPercent;
         rewardHalvingRate = _rewardHalvingRate;

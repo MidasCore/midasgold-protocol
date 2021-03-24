@@ -46,6 +46,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
     struct UserInfo {
         uint256 amount; // How many LP tokens the user has provided.
         uint256 rewardDebt; // Reward debt. See explanation below.
+        uint256 lockDebt;
         uint256 reward2Debt;
     }
 
@@ -444,6 +445,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         uint256 _amount = user.amount;
         user.amount = 0;
         user.rewardDebt = 0;
+        user.lockDebt = 0;
         user.reward2Debt = 0;
         pool.lpToken.safeTransfer(msg.sender, _amount);
         emit EmergencyWithdraw(msg.sender, _pid, _amount);
@@ -498,6 +500,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         require(_rewardHalvingRate > 0, "shouldn't set to 0%"); // can't trace
         require(_reservePercent <= 2000, "exceed 20%");
         require(_lockPercent <= 9000, "exceed 90%");
+        massUpdatePools();
         reservePercent = _reservePercent;
         lockPercent = _lockPercent;
         rewardHalvingRate = _rewardHalvingRate;
@@ -522,6 +525,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         require(_lastRewardBlock > block.number, "late");
         PoolInfo storage pool = poolInfo[_pid];
         require(!pool.isStarted || startBlock > block.number, "Pool started!");
+        require(_lastRewardBlock != pool.lastRewardBlock, "no change");
         pool.lastRewardBlock = _lastRewardBlock;
         if (pool.isStarted) {
             pool.isStarted = false;
@@ -540,6 +544,19 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
             bigHalvingBlock = startBlock + BLOCKS_PER_WEEK * 2;
             lockUntilBlock = startBlock + BLOCKS_PER_WEEK * 4;
             endBlock = startBlock + BLOCKS_PER_WEEK * 8;
+            uint256 plen = poolInfo.length;
+            for (uint256 pid = 0; pid < plen; ++pid) {
+                PoolInfo storage pool = poolInfo[pid];
+                if (pool.isStarted) {
+                    pool.lastRewardBlock = startBlock;
+                } else {
+                    if (pool.lastRewardBlock <= startBlock) {
+                        pool.isStarted = true;
+                        pool.lastRewardBlock = startBlock;
+                        totalAllocPoint = totalAllocPoint.add(pool.allocPoint);
+                    }
+                }
+            }
         }
         if (_bigHalvingBlock > block.number) bigHalvingBlock = _bigHalvingBlock;
         if (_endBlock > block.number) {
