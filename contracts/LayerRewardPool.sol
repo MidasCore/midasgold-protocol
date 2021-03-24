@@ -55,6 +55,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         uint256 allocPoint; // How many allocation points assigned to this pool. Mdg[N]s to distribute per block.
         uint256 lastRewardBlock; // Last block number that Mdg[N]s distribution occurs.
         uint256 accMdgPerShare; // Accumulated Mdg[N] per share, times 1e18. See below.
+        uint256 accLockPerShare;
         uint256 accReward2PerShare;
         uint256 reward2PerBlock; // 0.1 * 1e18
         uint256 reward2EndBlock;
@@ -220,6 +221,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
             allocPoint: _allocPoint,
             lastRewardBlock: _lastRewardBlock,
             accMdgPerShare: 0,
+            accLockPerShare: 0,
             accReward2PerShare: 0,
             reward2PerBlock: 0,
             reward2EndBlock: 0,
@@ -346,6 +348,9 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
             uint256 _generatedReward = getRewardBlocks(pool.lastRewardBlock, _targetTime, endBlock);
             uint256 _mdgReward = _generatedReward.mul(rewardPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
             pool.accMdgPerShare = pool.accMdgPerShare.add(_mdgReward.mul(1e18).div(lpSupply));
+            if (pool.lastRewardBlock < lockUntilBlock) {
+                pool.accLockPerShare = pool.accLockPerShare.add(_mdgReward.mul(lockPercent).div(10000).mul(1e18).div(lpSupply));
+            }
             if (pool.lastRewardBlock < pool.reward2EndBlock) {
                 uint256 _reward2 = getRewardBlocks(pool.lastRewardBlock, _targetTime, pool.reward2EndBlock).mul(pool.reward2PerBlock);
                 pool.accReward2PerShare = pool.accReward2PerShare.add(_reward2.mul(1e18).div(lpSupply));
@@ -359,7 +364,8 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         UserInfo storage user = userInfo[_pid][_account];
         uint256 _pendingReward = user.amount.mul(pool.accMdgPerShare).div(1e18).sub(user.rewardDebt);
         if (_pendingReward > 0) {
-            _safeMdgMint(_account, _pendingReward);
+            uint256 _pendingLock = user.amount.mul(pool.accLockPerShare).div(1e18).sub(user.lockDebt);
+            _safeMdgMint(_account, _pendingReward, _pendingLock);
             emit RewardPaid(_account, mdg, _pendingReward);
         }
         uint256 _pendingReward2 = user.amount.mul(pool.accReward2PerShare).div(1e18).sub(user.reward2Debt);
@@ -389,6 +395,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
             }
         }
         user.rewardDebt = user.amount.mul(pool.accMdgPerShare).div(1e18);
+        user.lockDebt = user.amount.mul(pool.accLockPerShare).div(1e18);
         user.reward2Debt = user.amount.mul(pool.accReward2PerShare).div(1e18);
         emit Deposit(_sender, _pid, _amount);
     }
@@ -406,6 +413,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
             pool.lpToken.safeTransfer(_sender, _amount);
         }
         user.rewardDebt = user.amount.mul(pool.accMdgPerShare).div(1e18);
+        user.lockDebt = user.amount.mul(pool.accLockPerShare).div(1e18);
         user.reward2Debt = user.amount.mul(pool.accReward2PerShare).div(1e18);
         emit Withdraw(_sender, _pid, _amount);
     }
@@ -441,7 +449,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         emit EmergencyWithdraw(msg.sender, _pid, _amount);
     }
 
-    function _safeMdgMint(address _to, uint256 _amount) internal {
+    function _safeMdgMint(address _to, uint256 _amount, uint256 _lockAmount) internal {
         if (ILayeredMdgToken(mdg).isMinter(address(this)) && _to != address(0)) {
             ILayeredMdgToken mdgToken = ILayeredMdgToken(mdg);
             uint256 _totalSupply = IERC20(mdg).totalSupply() + mdgToken.getBurnedAmount();
@@ -450,10 +458,9 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
             if (_mintAmount > 0) {
                 mdgToken.mint(address(this), _mintAmount);
                 uint256 _transferAmount = _mintAmount;
-                if (block.number < lockUntilBlock) {
-                    uint256 _lockAmount = _mintAmount.mul(lockPercent).div(10000);
-                    _transferAmount = _mintAmount.sub(_lockAmount);
-
+                if (_lockAmount > 0) {
+                    if (_lockAmount > _mintAmount) _lockAmount = _mintAmount;
+                    _transferAmount = _transferAmount.sub(_lockAmount);
                     mdgLocked[_to] = mdgLocked[_to].add(_lockAmount);
                     totalLock = totalLock.add(_lockAmount);
                     emit Lock(_to, _lockAmount);
