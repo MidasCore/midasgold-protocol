@@ -76,7 +76,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event RewardPaid(address indexed user, address token, uint256 amount);
+    event RewardPaid(address indexed user, address indexed token, uint256 amount);
 
     // Locker {
     uint256 public startReleaseBlock;
