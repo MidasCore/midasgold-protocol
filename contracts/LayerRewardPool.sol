@@ -114,6 +114,7 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         nextHalvingBlock = startBlock.add(BLOCKS_PER_WEEK);
         reserveFund = _reserveFund;
         operator = _operator;
+        halvingChecked = true;
 
         halvingPeriod = BLOCKS_PER_WEEK;
         reservePercent = 0; // 1% ~ 100
@@ -363,13 +364,19 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
     function _harvestReward(uint256 _pid, address _account) internal {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_account];
-        uint256 _pendingReward = user.amount.mul(pool.accMdgPerShare).div(1e18).sub(user.rewardDebt);
+        uint256 newRewardDebt = user.amount.mul(pool.accMdgPerShare).div(1e18);
+        uint256 newLockDebt = user.amount.mul(pool.accLockPerShare).div(1e18);
+        uint256 newReward2Debt = user.amount.mul(pool.accReward2PerShare).div(1e18);
+        uint256 _pendingReward = newRewardDebt.sub(user.rewardDebt);
+        uint256 _pendingLock = newLockDebt.sub(user.lockDebt);
+        uint256 _pendingReward2 = newReward2Debt.sub(user.reward2Debt);
+        user.rewardDebt = newRewardDebt;
+        user.lockDebt = newLockDebt;
+        user.reward2Debt = newReward2Debt;
         if (_pendingReward > 0) {
-            uint256 _pendingLock = user.amount.mul(pool.accLockPerShare).div(1e18).sub(user.lockDebt);
             _safeMdgMint(_account, _pendingReward, _pendingLock);
             emit RewardPaid(_account, mdg, _pendingReward);
         }
-        uint256 _pendingReward2 = user.amount.mul(pool.accReward2PerShare).div(1e18).sub(user.reward2Debt);
         if (_pendingReward2 > 0) {
             _safeTokenTransfer(pool.reward2, _account, _pendingReward2);
             emit RewardPaid(_account, pool.reward2, _pendingReward2);
@@ -571,6 +578,10 @@ contract LayerRewardPool {// all 'mdg' in this contract represents MDG2, MDG3, e
         if (lockUntilBlock > endBlock) lockUntilBlock = endBlock;
         startReleaseBlock = lockUntilBlock;
         endReleaseBlock = endBlock;
+    }
+
+    function poolLength() public view returns (uint256) {
+        return poolInfo.length;
     }
 
     // locker_field {
